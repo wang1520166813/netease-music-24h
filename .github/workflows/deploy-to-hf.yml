@@ -1,0 +1,52 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Hugging Face Hub
+        run: |
+          pip install huggingface_hub>=0.19.0
+
+      - name: Deploy to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+        run: |
+          python deploy.py
+        if: env.HF_TOKEN != '' && env.HF_SPACE_NAME != ''
+
+      - name: Deploy using huggingface-cli
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+        run: |
+          if [ -n "$HF_TOKEN" ] && [ -n "$HF_SPACE_NAME" ]; then
+            huggingface-cli login --token $HF_TOKEN --add-to-git-credential
+            huggingface-cli upload $HF_SPACE_NAME . . --repo-type=space --token=$HF_TOKEN
+            echo "✅ 部署成功到 Hugging Face Space: $HF_SPACE_NAME"
+          else
+            echo "⚠️ 未配置 HF_TOKEN 或 HF_SPACE_NAME，跳过 Hugging Face 部署"
+          fi
