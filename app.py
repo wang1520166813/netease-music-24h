@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-网易云音乐24小时挂机脚本
+网易云音乐 24 小时挂机脚本
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
+
+版本：v1.0.1
+更新：优化日志输出，增强稳定性
 """
 
 import os
@@ -73,7 +76,7 @@ class NetEaseMusic:
             )
             return response.status_code == 200
         except Exception as e:
-            state.add_log(f"登录检查失败: {str(e)}")
+            state.add_log(f"登录检查失败：{str(e)}")
             return False
     
     def get_playlist(self, playlist_id: str) -> List[dict]:
@@ -86,10 +89,10 @@ class NetEaseMusic:
                 tracks = data.get('result', {}).get('tracks', [])
                 return [{'id': track['id'], 'name': track['name'], 'artist': track['artists'][0]['name']} for track in tracks]
             else:
-                state.add_log(f"获取歌单失败: {response.status_code}")
+                state.add_log(f"获取歌单失败：{response.status_code}")
                 return []
         except Exception as e:
-            state.add_log(f"获取歌单异常: {str(e)}")
+            state.add_log(f"获取歌单异常：{str(e)}")
             return []
     
     def play_song(self, song_id: int) -> bool:
@@ -100,7 +103,7 @@ class NetEaseMusic:
             response = self.session.get(url, timeout=10)
             return response.status_code == 200
         except Exception as e:
-            state.add_log(f"播放歌曲失败: {str(e)}")
+            state.add_log(f"播放歌曲失败：{str(e)}")
             return False
     
     def update_play_count(self, song_id: int):
@@ -131,7 +134,7 @@ def start_playing(music_u: str, playlist_id: str):
     state.playlist_id = playlist_id
     
     state.add_log("=== 网易云音乐挂机开始 ===")
-    state.add_log(f"使用歌单ID: {playlist_id}")
+    state.add_log(f"使用歌单 ID: {playlist_id}")
     
     player = NetEaseMusic(music_u)
     
@@ -141,7 +144,7 @@ def start_playing(music_u: str, playlist_id: str):
         state.running = False
         return "登录失败，请检查 MUSIC_U Cookie"
     
-    state.add_log("登录成功")
+    state.add_log("登录成功 ✅")
     
     # 获取歌单
     playlist = player.get_playlist(playlist_id)
@@ -151,7 +154,7 @@ def start_playing(music_u: str, playlist_id: str):
         return "获取歌单失败"
     
     state.playlist = playlist
-    state.add_log(f"获取到 {len(playlist)} 首歌曲")
+    state.add_log(f"获取到 {len(playlist)} 首歌曲 🎵")
     
     state.is_playing = True
     state.play_count = 0
@@ -164,16 +167,16 @@ def start_playing(music_u: str, playlist_id: str):
                 break
                 
             state.current_song = f"{song['name']} - {song['artist']}"
-            state.add_log(f"正在播放: {state.current_song}")
+            state.add_log(f"正在播放：{state.current_song}")
             
             # 播放歌曲
             if player.play_song(song['id']):
                 state.play_count += 1
                 player.update_play_count(song['id'])
-                state.add_log(f"播放成功，总播放数: {state.play_count}")
+                state.add_log(f"播放成功，总播放数：{state.play_count}")
             else:
                 state.error_count += 1
-                state.add_log(f"播放失败，错误数: {state.error_count}")
+                state.add_log(f"播放失败，错误数：{state.error_count}")
             
             # 随机等待 (模拟听歌时间 3-5 分钟)
             wait_time = random.randint(180, 300)
@@ -215,12 +218,13 @@ def get_status():
 
 def get_logs():
     """获取日志"""
-    return "\n".join(state.logs[-50:])  # 返回最近50条日志
+    return "\n".join(state.logs[-50:])  # 返回最近 50 条日志
 
 # Gradio 界面
 def create_ui():
     with gr.Blocks(title="网易云音乐挂机", theme=gr.themes.Soft()) as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.1")
         
         with gr.Row():
             with gr.Column(scale=1):
