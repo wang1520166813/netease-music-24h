@@ -5,8 +5,8 @@
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
 
-版本：v1.0.2
-更新：修复 Gradio 6.0 兼容性问题
+版本：v1.0.3
+更新：修复歌单获取 API，使用正确的接口
 """
 
 import os
@@ -63,7 +63,11 @@ class NetEaseMusic:
         })
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://music.163.com/'
+            'Referer': 'https://music.163.com/',
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
         }
         self.session.headers.update(self.headers)
         
@@ -80,20 +84,58 @@ class NetEaseMusic:
             return False
     
     def get_playlist(self, playlist_id: str) -> List[dict]:
-        """获取歌单歌曲列表"""
+        """获取歌单歌曲列表 - 使用正确的 API 接口"""
         try:
-            url = f'https://music.163.com/api/playlist/detail?id={playlist_id}'
-            response = self.session.get(url, timeout=10)
+            # 尝试使用网页版 API
+            url = f'https://music.163.com/api/v3/playlist/detail?id={playlist_id}&n=1000'
+            response = self.session.get(url, timeout=15)
+            
             if response.status_code == 200:
                 data = response.json()
-                tracks = data.get('result', {}).get('tracks', [])
-                return [{'id': track['id'], 'name': track['name'], 'artist': track['artists'][0]['name']} for track in tracks]
-            else:
-                state.add_log(f"获取歌单失败：{response.status_code}")
-                return []
+                
+                # 检查返回数据
+                if 'playlist' in data and data['playlist']:
+                    tracks = data['playlist'].get('tracks', [])
+                    if tracks:
+                        return [{'id': track['id'], 'name': track['name'], 'artist': track['ar'][0]['name']} for track in tracks]
+                    
+                    # 如果没有 tracks，可能是需要解析 trackIds
+                    track_ids = data['playlist'].get('trackIds', [])
+                    if track_ids:
+                        # 获取歌曲详情
+                        return self._get_tracks_detail([t['id'] for t in track_ids[:100]])
+                
+                # 尝试旧的 API 格式
+                if 'result' in data:
+                    tracks = data['result'].get('tracks', [])
+                    if tracks:
+                        return [{'id': track['id'], 'name': track['name'], 'artist': track['artists'][0]['name']} for track in tracks]
+            
+            state.add_log(f"获取歌单失败：状态码 {response.status_code}")
+            return []
+            
         except Exception as e:
             state.add_log(f"获取歌单异常：{str(e)}")
             return []
+    
+    def _get_tracks_detail(self, track_ids: List[int]) -> List[dict]:
+        """获取歌曲详情"""
+        try:
+            if not track_ids:
+                return []
+            
+            ids_str = ','.join(str(id) for id in track_ids)
+            url = f'https://music.163.com/api/song/detail?ids=[{ids_str}]'
+            response = self.session.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                songs = data.get('songs', [])
+                return [{'id': song['id'], 'name': song['name'], 'artist': song['artists'][0]['name']} for song in songs]
+        except Exception as e:
+            state.add_log(f"获取歌曲详情失败：{str(e)}")
+        
+        return []
     
     def play_song(self, song_id: int) -> bool:
         """播放歌曲（模拟播放行为）"""
@@ -149,7 +191,7 @@ def start_playing(music_u: str, playlist_id: str):
     # 获取歌单
     playlist = player.get_playlist(playlist_id)
     if not playlist:
-        state.add_log("获取歌单失败")
+        state.add_log("获取歌单失败，请检查歌单 ID 是否正确或歌单是否为公开")
         state.running = False
         return "获取歌单失败"
     
@@ -224,7 +266,7 @@ def get_logs():
 def create_ui():
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.2")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.3")
         
         with gr.Row():
             with gr.Column(scale=1):
