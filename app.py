@@ -5,8 +5,8 @@
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
 
-版本：v1.0.6
-更新：播放失败立即跳过，不等待；自动过滤 VIP/版权受限歌曲
+版本：v1.0.7
+更新：全量读取歌单所有歌曲（支持 3500+ 首），分页获取
 """
 
 import os
@@ -34,7 +34,7 @@ class PlayerState:
         self.playlist = []
         self.play_count = 0
         self.error_count = 0
-        self.skip_count = 0  # 新增：跳过次数
+        self.skip_count = 0
         self.start_time = None
         self.logs: List[str] = []
         self.music_u = ""
@@ -86,75 +86,108 @@ class NetEaseMusic:
             return False
     
     def get_playlist(self, playlist_id: str) -> List[dict]:
+        """获取歌单所有歌曲（分页读取）"""
+        all_tracks = []
+        page_size = 1000  # 每次请求 1000 首
+        offset = 0
+        total = 0
+        
         try:
-            url = f'https://music.163.com/api/v3/playlist/detail?id={playlist_id}&n=1000'
-            response = self.session.get(url, timeout=15)
+            state.add_log(f"🔄 开始分页获取歌单歌曲，歌单 ID: {playlist_id}")
             
-            if response.status_code == 200:
+            while True:
+                url = f'https://music.163.com/api/v3/playlist/detail?id={playlist_id}&n={page_size}&offset={offset}'
+                response = self.session.get(url, timeout=15)
+                
+                if response.status_code != 200:
+                    state.add_log(f"获取歌单失败：状态码 {response.status_code}")
+                    break
+                
                 data = response.json()
                 
-                if 'playlist' in data and data['playlist']:
-                    tracks = data['playlist'].get('tracks', [])
-                    if tracks:
-                        # 提取歌曲信息，包括 fee (0=免费，1=VIP，8=购买等)
-                        return [{
-                            'id': track['id'], 
-                            'name': track['name'], 
-                            'artist': track['ar'][0]['name'],
-                            'fee': track.get('fee', 0)  # 获取版权限制状态
-                        } for track in tracks]
-                    
-                    track_ids = data['playlist'].get('trackIds', [])
-                    if track_ids:
-                        return self._get_tracks_detail([t['id'] for t in track_ids[:100]])
+                if 'playlist' not in data or not data['playlist']:
+                    break
                 
-                if 'result' in data:
-                    tracks = data['result'].get('tracks', [])
-                    if tracks:
-                        return [{
-                            'id': track['id'], 
-                            'name': track['name'], 
-                            'artist': track['artists'][0]['name'],
-                            'fee': track.get('fee', 0)
-                        } for track in tracks]
-            
-            state.add_log(f"获取歌单失败：状态码 {response.status_code}")
-            return []
+                playlist_data = data['playlist']
+                
+                # 第一次请求时获取总数
+                if total == 0:
+                    total = playlist_data.get('trackCount', 0)
+                    state.add_log(f"📊 歌单总歌曲数：{total}")
+                
+                tracks = playlist_data.get('tracks', [])
+                if not tracks:
+                    # 如果没有 tracks，尝试通过 trackIds 获取
+                    track_ids = playlist_data.get('trackIds', [])
+                    if track_ids:
+                        # 获取所有歌曲 ID
+                        all_song_ids = [t['id'] for t in track_ids]
+                        # 分页获取歌曲详情
+                        state.add_log(f"🔄 通过 trackIds 获取 {len(all_song_ids)} 首歌曲详情...")
+                        return self._get_tracks_detail_paginated(all_song_ids)
+                    break
+                
+                # 提取歌曲信息
+                page_tracks = [{
+                    'id': track['id'], 
+                    'name': track['name'], 
+                    'artist': track['ar'][0]['name'],
+                    'fee': track.get('fee', 0)
+                } for track in tracks]
+                
+                all_tracks.extend(page_tracks)
+                state.add_log(f"📥 已获取 {len(all_tracks)}/{total} 首歌曲")
+                
+                # 如果已获取完所有歌曲，退出
+                if len(all_tracks) >= total or len(tracks) < page_size:
+                    break
+                
+                offset += page_size
+                time.sleep(0.5)  # 避免请求过快
+                
+            state.add_log(f"✅ 歌单歌曲获取完成，共 {len(all_tracks)} 首")
+            return all_tracks
             
         except Exception as e:
             state.add_log(f"获取歌单异常：{str(e)}")
-            return []
+            return all_tracks if all_tracks else []
     
-    def _get_tracks_detail(self, track_ids: List[int]) -> List[dict]:
+    def _get_tracks_detail_paginated(self, track_ids: List[int]) -> List[dict]:
+        """分页获取歌曲详情"""
+        all_songs = []
+        page_size = 100  # 每次请求 100 首
+        
         try:
-            if not track_ids:
-                return []
-            
-            ids_str = ','.join(str(id) for id in track_ids)
-            url = f'https://music.163.com/api/song/detail?ids=[{ids_str}]'
-            response = self.session.get(url, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                songs = data.get('songs', [])
-                return [{
-                    'id': song['id'], 
-                    'name': song['name'], 
-                    'artist': song['artists'][0]['name'],
-                    'fee': song.get('fee', 0)
-                } for song in songs]
+            for i in range(0, len(track_ids), page_size):
+                batch_ids = track_ids[i:i+page_size]
+                ids_str = ','.join(str(id) for id in batch_ids)
+                url = f'https://music.163.com/api/song/detail?ids=[{ids_str}]'
+                response = self.session.get(url, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    songs = data.get('songs', [])
+                    batch_songs = [{
+                        'id': song['id'], 
+                        'name': song['name'], 
+                        'artist': song['artists'][0]['name'],
+                        'fee': song.get('fee', 0)
+                    } for song in songs]
+                    all_songs.extend(batch_songs)
+                    state.add_log(f"📥 已获取 {len(all_songs)}/{len(track_ids)} 首歌曲详情")
+                time.sleep(0.3)  # 避免请求过快
+                
+            return all_songs
         except Exception as e:
-            state.add_log(f"获取歌曲详情失败：{str(e)}")
-        return []
+            state.add_log(f"获取歌曲详情异常：{str(e)}")
+            return all_songs
     
     def play_song(self, song_id: int) -> bool:
         try:
             url = f'https://music.163.com/api/song/enhance/player/url?id={song_id}&ids=[{song_id}]&br=320000'
             response = self.session.get(url, timeout=10)
-            # 检查响应状态码和返回内容
             if response.status_code == 200:
                 data = response.json()
-                # 检查是否有有效 URL
                 if data.get('data') and len(data['data']) > 0:
                     if data['data'][0].get('url'):
                         return True
@@ -252,7 +285,6 @@ def start_playing(music_u: str, playlist_id: str):
                 # 播放失败（可能是临时网络问题或版权检查）
                 state.error_count += 1
                 state.add_log(f"❌ 播放失败（可能是网络波动或版权限制），立即跳过下一首！")
-                # 不等待，直接继续下一首
                 continue
         
         # 如果歌单播完，重新循环
@@ -330,7 +362,7 @@ def create_ui():
     
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.6 (智能跳过失败)")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.7 (全量读取 3500+ 首)")
         
         with gr.Row():
             with gr.Column(scale=1):
