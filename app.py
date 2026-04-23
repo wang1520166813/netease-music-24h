@@ -5,8 +5,8 @@
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
 
-版本：v1.0.1
-更新：优化日志输出，增强稳定性
+版本：v1.0.2
+更新：修复 Gradio 6.0 兼容性问题
 """
 
 import os
@@ -44,7 +44,7 @@ class PlayerState:
         log_entry = f"[{timestamp}] {message}"
         self.logs.append(log_entry)
         logger.info(message)
-        # 保留最近100条日志
+        # 保留最近 100 条日志
         if len(self.logs) > 100:
             self.logs = self.logs[-100:]
 
@@ -222,9 +222,9 @@ def get_logs():
 
 # Gradio 界面
 def create_ui():
-    with gr.Blocks(title="网易云音乐挂机", theme=gr.themes.Soft()) as app:
+    with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.1")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.2")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -298,19 +298,6 @@ def create_ui():
             fn=get_logs,
             outputs=[logs_display]
         )
-        
-        # 自动刷新
-        app.load(
-            fn=get_status,
-            outputs=[status_display],
-            interval=5
-        )
-        
-        app.load(
-            fn=get_logs,
-            outputs=[logs_display],
-            interval=3
-        )
     
     return app
 
@@ -324,5 +311,6 @@ if __name__ == "__main__":
     app.launch(
         server_name='0.0.0.0',
         server_port=int(os.getenv('PORT', 7860)),
-        share=False
+        share=False,
+        theme=gr.themes.Soft()
     )
