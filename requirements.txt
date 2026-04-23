@@ -1,2 +1,4 @@
-gradio==4.29.0
-requests==2.31.0
+# Gradio 版本由 Hugging Face Space 自动管理
+# 本地开发可以使用以下版本
+gradio>=4.0.0
+requests>=2.31.0
