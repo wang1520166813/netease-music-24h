@@ -5,8 +5,8 @@
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
 
-版本：v1.0.5
-更新：增加守护线程，每分钟自动检测状态，意外停止自动重启
+版本：v1.0.6
+更新：播放失败立即跳过，不等待；成功则等待 3-5 分钟
 """
 
 import os
@@ -39,15 +39,14 @@ class PlayerState:
         self.music_u = ""
         self.playlist_id = ""
         self.running = False
-        self.last_stop_time = None  # 记录上次停止的时间
-        self.manual_stop = False    # 标记是否为用户手动停止
+        self.last_stop_time = None
+        self.manual_stop = False
         
     def add_log(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
         self.logs.append(log_entry)
         logger.info(message)
-        # 保留最近 100 条日志
         if len(self.logs) > 100:
             self.logs = self.logs[-100:]
 
@@ -165,7 +164,7 @@ def get_playlist_id() -> str:
 def start_playing(music_u: str, playlist_id: str):
     """开始播放流程"""
     state.running = True
-    state.manual_stop = False  # 重置手动停止标志
+    state.manual_stop = False
     state.start_time = datetime.now()
     state.music_u = music_u
     state.playlist_id = playlist_id
@@ -208,28 +207,34 @@ def start_playing(music_u: str, playlist_id: str):
             state.current_song = f"{song['name']} - {song['artist']}"
             state.add_log(f"正在播放：{state.current_song}")
             
+            # 尝试播放
             if player.play_song(song['id']):
                 state.play_count += 1
                 player.update_play_count(song['id'])
                 state.add_log(f"播放成功，总播放数：{state.play_count}")
+                
+                # 播放成功：等待 3-5 分钟 (模拟真人听歌)
+                wait_time = random.randint(180, 300)
+                state.add_log(f"✅ 播放成功，等待 {wait_time} 秒后切换下一首")
+                
+                for _ in range(wait_time):
+                    if not state.running:
+                        break
+                    time.sleep(1)
             else:
+                # 播放失败：立即跳过，不等待
                 state.error_count += 1
-                state.add_log(f"播放失败，错误数：{state.error_count}")
-            
-            # 随机等待 (模拟听歌时间 3-5 分钟)
-            wait_time = random.randint(180, 300)
-            state.add_log(f"等待 {wait_time} 秒后切换下一首")
-            
-            for _ in range(wait_time):
-                if not state.running:
-                    break
-                time.sleep(1)
-    
+                state.add_log(f"❌ 播放失败 (可能是 VIP 或网络问题)，错误数：{state.error_count} -> 立即跳过，播放下一首")
+                # 直接 continue，进入下一首，不执行等待逻辑
+                continue
+        
+        # 如果循环结束，说明播完了一整轮，重新从第 1 首开始
+        state.add_log("🔄 一轮播放结束，重新从第 1 首开始循环")
+
     # 播放循环结束
     state.is_playing = False
     state.last_stop_time = datetime.now()
     
-    # 如果是用户手动停止，记录日志
     if state.manual_stop:
         state.add_log("=== 挂机已手动停止 ===")
     else:
@@ -274,31 +279,24 @@ def watchdog():
     如果状态是“已停止”且不是用户手动停止，则自动重启
     """
     while True:
-        time.sleep(60)  # 每分钟检查一次
+        time.sleep(60)
         
-        # 检查是否处于停止状态
         if not state.is_playing:
-            # 检查是否是用户手动停止
             if state.manual_stop:
-                # 用户手动停止，不重启
                 continue
             
-            # 检查距离上次停止是否超过 1 分钟 (防止刚停止就重启)
             if state.last_stop_time:
                 time_since_stop = (datetime.now() - state.last_stop_time).total_seconds()
                 if time_since_stop < 60:
                     continue
             
-            # 如果是意外停止，且距离上次停止超过 1 分钟，则自动重启
             state.add_log("⚠️ 检测到挂机意外停止，守护线程正在尝试自动重启...")
             
-            # 获取环境变量中的默认值
             music_u = get_music_u()
             playlist_id = get_playlist_id()
             
             if music_u and playlist_id:
                 state.add_log(f"🔄 使用默认配置自动重启：歌单 ID {playlist_id}")
-                # 启动新线程
                 thread = threading.Thread(target=start_playing, args=(music_u, playlist_id))
                 thread.daemon = True
                 thread.start()
@@ -311,13 +309,12 @@ watchdog_thread.start()
 
 # Gradio 界面
 def create_ui():
-    # 从环境变量获取默认值
     default_music_u = os.getenv('MUSIC_U', '')
     default_playlist_id = os.getenv('PLAYLIST_ID', '1959142287')
     
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.5 (带自动守护)")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.6 (失败立即跳过)")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -353,9 +350,7 @@ def create_ui():
                 interactive=False
             )
         
-        # 事件处理
         def on_start(music_u, playlist_id):
-            # 如果输入为空，使用环境变量默认值
             if not music_u:
                 music_u = default_music_u
             if not playlist_id:
@@ -366,7 +361,6 @@ def create_ui():
             if not playlist_id:
                 return "请先输入歌单 ID 或在环境变量中配置", get_status(), get_logs()
             
-            # 重置手动停止标志
             state.manual_stop = False
             
             import threading
@@ -405,11 +399,9 @@ def create_ui():
     return app
 
 if __name__ == "__main__":
-    # 从环境变量获取配置
     music_u = os.getenv('MUSIC_U', '')
     playlist_id = os.getenv('PLAYLIST_ID', '1959142287')
     
-    # 创建并启动应用
     app = create_ui()
     app.launch(
         server_name='0.0.0.0',
