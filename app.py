@@ -6,7 +6,7 @@
 提供 Gradio 控制面板显示播放状态和日志
 
 版本：v1.0.8
-更新：状态检测改为每秒，日志实时更新（无需手动刷新）
+更新：守护线程 1 秒检测一次；页面所有信息（状态、日志）实时自动刷新
 """
 
 import os
@@ -42,14 +42,13 @@ class PlayerState:
         self.running = False
         self.last_stop_time = None
         self.manual_stop = False
-        self.last_check_time = time.time()
         
     def add_log(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
         self.logs.append(log_entry)
         logger.info(message)
-        if len(self.logs) > 200:  # 保留最近 200 条
+        if len(self.logs) > 200:
             self.logs = self.logs[-200:]
 
 state = PlayerState()
@@ -317,17 +316,16 @@ def get_status():
 def get_logs():
     return "\n".join(state.logs[-50:])
 
-# --- 守护线程逻辑 (改为每秒检测) ---
+# --- 守护线程逻辑 (1 秒检测) ---
 def watchdog():
     while True:
-        time.sleep(1)  # 每秒检查一次
-        
+        time.sleep(1)  # 每 1 秒检测一次
         if not state.is_playing:
             if state.manual_stop:
                 continue
             if state.last_stop_time:
                 time_since_stop = (datetime.now() - state.last_stop_time).total_seconds()
-                if time_since_stop < 1:  # 1 秒后重启
+                if time_since_stop < 1:
                     continue
             state.add_log("⚠️ 检测到挂机意外停止，守护线程正在尝试自动重启...")
             music_u = get_music_u()
@@ -344,23 +342,14 @@ def watchdog():
 watchdog_thread = threading.Thread(target=watchdog, daemon=True)
 watchdog_thread.start()
 
-# --- 日志实时更新线程 ---
-def log_updater():
-    """后台线程：每秒更新一次日志显示"""
-    while True:
-        time.sleep(1)
-        # 触发 Gradio 更新（通过全局变量或回调，这里利用 get_logs 自动获取最新）
-        # 在 Gradio 中，我们通过让界面定期调用 get_logs 来实现
-        pass
-
-# Gradio 界面
+# Gradio 界面 (实时刷新)
 def create_ui():
     default_music_u = os.getenv('MUSIC_U', '')
     default_playlist_id = os.getenv('PLAYLIST_ID', '1959142287')
     
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.8 (秒级检测 + 实时日志)")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.8 (1 秒检测 + 实时刷新)")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -381,8 +370,6 @@ def create_ui():
                 with gr.Row():
                     start_btn = gr.Button("🎵 开始播放", variant="primary")
                     stop_btn = gr.Button("⏹ 停止播放", variant="secondary")
-                
-                status_btn = gr.Button("🔄 刷新状态")
             
             with gr.Column(scale=1):
                 gr.Markdown("### 状态信息")
@@ -390,7 +377,7 @@ def create_ui():
         
         with gr.Row():
             logs_display = gr.Textbox(
-                label="日志 (实时更新)",
+                label="日志 (实时自动更新)",
                 lines=15,
                 max_lines=50,
                 interactive=False
@@ -434,29 +421,17 @@ def create_ui():
             outputs=[logs_display]
         )
         
-        status_btn.click(
+        # 使用 gr.Timer 实现实时自动刷新 (每 1 秒)
+        timer = gr.Timer(value=1, active=True)
+        timer.tick(
             fn=get_status,
             outputs=[status_display]
-        ).then(
+        )
+        timer.tick(
             fn=get_logs,
             outputs=[logs_display]
         )
-        
-        # --- 关键修改：使用 Gradio 的 load 事件实现自动刷新 ---
-        # 注意：Gradio 6.0 不支持 interval，但我们可以利用 app.load 在页面加载时启动一个定时任务
-        # 或者使用 gr.Timer (如果可用)，但最兼容的方式是利用 Gradio 的自动刷新机制
-        # 这里我们使用一个技巧：让界面在加载时自动调用 get_status 和 get_logs，并设置一个极短的刷新间隔
-        # 由于 Gradio 6.0 移除了 interval，我们使用 gr.Timer 组件（如果版本支持）或手动触发
-        
-        # 方案：使用 gr.Timer (Gradio 4.x+ 支持)
-        try:
-            timer = gr.Timer(1)  # 每秒触发一次
-            timer.tick(fn=get_status, outputs=[status_display])
-            timer.tick(fn=get_logs, outputs=[logs_display])
-        except:
-            # 如果 gr.Timer 不可用，回退到手动刷新提示
-            gr.Markdown("*注：日志和状态将每秒自动更新（如果 Gradio 版本支持）*")
-
+    
     return app
 
 if __name__ == "__main__":
