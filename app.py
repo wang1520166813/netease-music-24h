@@ -6,7 +6,7 @@
 提供 Gradio 控制面板显示播放状态和日志
 
 版本：v1.0.6
-更新：播放失败立即跳过，不等待；成功则等待 3-5 分钟
+更新：播放失败立即跳过，不等待；自动过滤 VIP/版权受限歌曲
 """
 
 import os
@@ -34,6 +34,7 @@ class PlayerState:
         self.playlist = []
         self.play_count = 0
         self.error_count = 0
+        self.skip_count = 0  # 新增：跳过次数
         self.start_time = None
         self.logs: List[str] = []
         self.music_u = ""
@@ -74,7 +75,6 @@ class NetEaseMusic:
         self.session.headers.update(self.headers)
         
     def check_login(self) -> bool:
-        """检查登录状态"""
         try:
             response = self.session.get(
                 'https://music.163.com/api/nuser/account/get',
@@ -86,7 +86,6 @@ class NetEaseMusic:
             return False
     
     def get_playlist(self, playlist_id: str) -> List[dict]:
-        """获取歌单歌曲列表"""
         try:
             url = f'https://music.163.com/api/v3/playlist/detail?id={playlist_id}&n=1000'
             response = self.session.get(url, timeout=15)
@@ -97,7 +96,13 @@ class NetEaseMusic:
                 if 'playlist' in data and data['playlist']:
                     tracks = data['playlist'].get('tracks', [])
                     if tracks:
-                        return [{'id': track['id'], 'name': track['name'], 'artist': track['ar'][0]['name']} for track in tracks]
+                        # 提取歌曲信息，包括 fee (0=免费，1=VIP，8=购买等)
+                        return [{
+                            'id': track['id'], 
+                            'name': track['name'], 
+                            'artist': track['ar'][0]['name'],
+                            'fee': track.get('fee', 0)  # 获取版权限制状态
+                        } for track in tracks]
                     
                     track_ids = data['playlist'].get('trackIds', [])
                     if track_ids:
@@ -106,7 +111,12 @@ class NetEaseMusic:
                 if 'result' in data:
                     tracks = data['result'].get('tracks', [])
                     if tracks:
-                        return [{'id': track['id'], 'name': track['name'], 'artist': track['artists'][0]['name']} for track in tracks]
+                        return [{
+                            'id': track['id'], 
+                            'name': track['name'], 
+                            'artist': track['artists'][0]['name'],
+                            'fee': track.get('fee', 0)
+                        } for track in tracks]
             
             state.add_log(f"获取歌单失败：状态码 {response.status_code}")
             return []
@@ -116,7 +126,6 @@ class NetEaseMusic:
             return []
     
     def _get_tracks_detail(self, track_ids: List[int]) -> List[dict]:
-        """获取歌曲详情"""
         try:
             if not track_ids:
                 return []
@@ -128,24 +137,33 @@ class NetEaseMusic:
             if response.status_code == 200:
                 data = response.json()
                 songs = data.get('songs', [])
-                return [{'id': song['id'], 'name': song['name'], 'artist': song['artists'][0]['name']} for song in songs]
+                return [{
+                    'id': song['id'], 
+                    'name': song['name'], 
+                    'artist': song['artists'][0]['name'],
+                    'fee': song.get('fee', 0)
+                } for song in songs]
         except Exception as e:
             state.add_log(f"获取歌曲详情失败：{str(e)}")
-        
         return []
     
     def play_song(self, song_id: int) -> bool:
-        """播放歌曲"""
         try:
             url = f'https://music.163.com/api/song/enhance/player/url?id={song_id}&ids=[{song_id}]&br=320000'
             response = self.session.get(url, timeout=10)
-            return response.status_code == 200
+            # 检查响应状态码和返回内容
+            if response.status_code == 200:
+                data = response.json()
+                # 检查是否有有效 URL
+                if data.get('data') and len(data['data']) > 0:
+                    if data['data'][0].get('url'):
+                        return True
+            return False
         except Exception as e:
-            state.add_log(f"播放歌曲失败：{str(e)}")
+            state.add_log(f"播放歌曲请求失败：{str(e)}")
             return False
     
     def update_play_count(self, song_id: int):
-        """更新播放计数"""
         try:
             url = 'https://music.163.com/api/feedback/weblog'
             data = {
@@ -162,7 +180,6 @@ def get_playlist_id() -> str:
     return os.getenv('PLAYLIST_ID', '')
 
 def start_playing(music_u: str, playlist_id: str):
-    """开始播放流程"""
     state.running = True
     state.manual_stop = False
     state.start_time = datetime.now()
@@ -191,16 +208,26 @@ def start_playing(music_u: str, playlist_id: str):
         state.last_stop_time = datetime.now()
         return "获取歌单失败"
     
-    state.playlist = playlist
-    state.add_log(f"获取到 {len(playlist)} 首歌曲 🎵")
+    # 过滤掉 VIP/版权受限歌曲 (fee != 0)
+    free_playlist = [song for song in playlist if song.get('fee', 0) == 0]
+    skipped_vip = len(playlist) - len(free_playlist)
+    
+    if skipped_vip > 0:
+        state.add_log(f"⚠️ 检测到 {skipped_vip} 首 VIP/受限歌曲，已自动过滤，仅播放 {len(free_playlist)} 首免费歌曲")
+    else:
+        state.add_log(f"✅ 歌单中所有歌曲均可播放，共 {len(free_playlist)} 首")
+    
+    state.playlist = free_playlist
+    state.add_log(f"获取到 {len(free_playlist)} 首可播放歌曲 🎵")
     
     state.is_playing = True
     state.play_count = 0
     state.error_count = 0
+    state.skip_count = 0
     
     # 循环播放
     while state.running:
-        for song in playlist:
+        for song in state.playlist:
             if not state.running:
                 break
                 
@@ -213,7 +240,7 @@ def start_playing(music_u: str, playlist_id: str):
                 player.update_play_count(song['id'])
                 state.add_log(f"播放成功，总播放数：{state.play_count}")
                 
-                # 播放成功：等待 3-5 分钟 (模拟真人听歌)
+                # 正常等待 (3-5 分钟)
                 wait_time = random.randint(180, 300)
                 state.add_log(f"✅ 播放成功，等待 {wait_time} 秒后切换下一首")
                 
@@ -222,14 +249,14 @@ def start_playing(music_u: str, playlist_id: str):
                         break
                     time.sleep(1)
             else:
-                # 播放失败：立即跳过，不等待
+                # 播放失败（可能是临时网络问题或版权检查）
                 state.error_count += 1
-                state.add_log(f"❌ 播放失败 (可能是 VIP 或网络问题)，错误数：{state.error_count} -> 立即跳过，播放下一首")
-                # 直接 continue，进入下一首，不执行等待逻辑
+                state.add_log(f"❌ 播放失败（可能是网络波动或版权限制），立即跳过下一首！")
+                # 不等待，直接继续下一首
                 continue
         
-        # 如果循环结束，说明播完了一整轮，重新从第 1 首开始
-        state.add_log("🔄 一轮播放结束，重新从第 1 首开始循环")
+        # 如果歌单播完，重新循环
+        state.add_log("🔄 歌单播放完毕，重新开始循环...")
 
     # 播放循环结束
     state.is_playing = False
@@ -243,14 +270,12 @@ def start_playing(music_u: str, playlist_id: str):
     return "挂机已停止"
 
 def stop_playing():
-    """停止播放（用户手动）"""
     state.manual_stop = True
     state.running = False
     state.add_log("用户请求停止播放")
     return "正在停止..."
 
 def get_status():
-    """获取当前状态"""
     uptime = ""
     if state.start_time:
         delta = datetime.now() - state.start_time
@@ -262,46 +287,37 @@ def get_status():
 ### 播放状态
 - **当前歌曲**: {state.current_song or '无'}
 - **播放次数**: {state.play_count}
+- **跳过次数**: {state.skip_count}
 - **错误次数**: {state.error_count}
 - **运行时长**: {uptime}
 - **状态**: {'🔴 运行中' if state.is_playing else '⚪ 已停止'}
-- **歌单歌曲数**: {len(state.playlist)}
+- **可播放歌曲数**: {len(state.playlist)}
 """
 
 def get_logs():
-    """获取日志"""
     return "\n".join(state.logs[-50:])
 
-# --- 守护线程逻辑 ---
+# 守护线程逻辑
 def watchdog():
-    """
-    守护线程：每分钟检查一次状态
-    如果状态是“已停止”且不是用户手动停止，则自动重启
-    """
     while True:
         time.sleep(60)
-        
         if not state.is_playing:
             if state.manual_stop:
                 continue
-            
             if state.last_stop_time:
                 time_since_stop = (datetime.now() - state.last_stop_time).total_seconds()
                 if time_since_stop < 60:
                     continue
-            
             state.add_log("⚠️ 检测到挂机意外停止，守护线程正在尝试自动重启...")
-            
             music_u = get_music_u()
             playlist_id = get_playlist_id()
-            
             if music_u and playlist_id:
                 state.add_log(f"🔄 使用默认配置自动重启：歌单 ID {playlist_id}")
                 thread = threading.Thread(target=start_playing, args=(music_u, playlist_id))
                 thread.daemon = True
                 thread.start()
             else:
-                state.add_log("❌ 自动重启失败：未找到默认配置 (MUSIC_U 或 PLAYLIST_ID)")
+                state.add_log("❌ 自动重启失败：未找到默认配置")
 
 # 启动守护线程
 watchdog_thread = threading.Thread(target=watchdog, daemon=True)
@@ -314,7 +330,7 @@ def create_ui():
     
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.6 (失败立即跳过)")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.6 (智能跳过失败)")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -322,7 +338,7 @@ def create_ui():
                 
                 music_u_input = gr.Textbox(
                     label="MUSIC_U Cookie",
-                    placeholder="请输入您的 MUSIC_U Cookie（如已配置环境变量可留空）",
+                    placeholder="请输入您的 MUSIC_U Cookie",
                     type="password",
                     value=default_music_u
                 )
@@ -357,9 +373,9 @@ def create_ui():
                 playlist_id = default_playlist_id
             
             if not music_u:
-                return "请先输入 MUSIC_U Cookie 或在环境变量中配置", get_status(), get_logs()
+                return "请先输入 MUSIC_U Cookie", get_status(), get_logs()
             if not playlist_id:
-                return "请先输入歌单 ID 或在环境变量中配置", get_status(), get_logs()
+                return "请先输入歌单 ID", get_status(), get_logs()
             
             state.manual_stop = False
             
