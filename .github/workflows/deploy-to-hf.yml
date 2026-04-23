@@ -35,18 +35,14 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
         run: |
-          python deploy.py
-        if: env.HF_TOKEN != '' && env.HF_SPACE_NAME != ''
-
-      - name: Deploy using huggingface-cli
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
-        run: |
           if [ -n "$HF_TOKEN" ] && [ -n "$HF_SPACE_NAME" ]; then
+            echo "🚀 开始部署到 Hugging Face Space: $HF_SPACE_NAME"
             huggingface-cli login --token $HF_TOKEN --add-to-git-credential
-            huggingface-cli upload $HF_SPACE_NAME . . --repo-type=space --token=$HF_TOKEN
+            # 上传关键文件到 Space
+            huggingface-cli upload $HF_SPACE_NAME ./app.py app.py --repo-type=space --token=$HF_TOKEN
+            huggingface-cli upload $HF_SPACE_NAME ./requirements.txt requirements.txt --repo-type=space --token=$HF_TOKEN
             echo "✅ 部署成功到 Hugging Face Space: $HF_SPACE_NAME"
+            echo "📍 访问地址：https://huggingface.co/spaces/$HF_SPACE_NAME"
           else
             echo "⚠️ 未配置 HF_TOKEN 或 HF_SPACE_NAME，跳过 Hugging Face 部署"
           fi
