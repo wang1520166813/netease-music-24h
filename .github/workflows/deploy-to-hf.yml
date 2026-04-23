@@ -25,9 +25,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Install Hugging Face Hub
-        run: |
           pip install huggingface_hub>=0.19.0
 
       - name: Deploy to Hugging Face Space
@@ -37,10 +34,14 @@ jobs:
         run: |
           if [ -n "$HF_TOKEN" ] && [ -n "$HF_SPACE_NAME" ]; then
             echo "🚀 开始部署到 Hugging Face Space: $HF_SPACE_NAME"
-            huggingface-cli login --token $HF_TOKEN --add-to-git-credential
+            
+            # 使用新的 hf 命令登录
+            hf auth login --token $HF_TOKEN
+            
             # 上传关键文件到 Space
-            huggingface-cli upload $HF_SPACE_NAME ./app.py app.py --repo-type=space --token=$HF_TOKEN
-            huggingface-cli upload $HF_SPACE_NAME ./requirements.txt requirements.txt --repo-type=space --token=$HF_TOKEN
+            hf upload $HF_SPACE_NAME ./app.py app.py --repo-type=space
+            hf upload $HF_SPACE_NAME ./requirements.txt requirements.txt --repo-type=space
+            
             echo "✅ 部署成功到 Hugging Face Space: $HF_SPACE_NAME"
             echo "📍 访问地址：https://huggingface.co/spaces/$HF_SPACE_NAME"
           else
