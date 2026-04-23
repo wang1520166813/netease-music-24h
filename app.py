@@ -5,8 +5,8 @@
 支持 MUSIC_U Cookie 登录、循环播放、自动切歌、异常重连
 提供 Gradio 控制面板显示播放状态和日志
 
-版本：v1.0.3
-更新：修复歌单获取 API，使用正确的接口
+版本：v1.0.4
+更新：启动时自动读取环境变量中的默认值
 """
 
 import os
@@ -264,9 +264,13 @@ def get_logs():
 
 # Gradio 界面
 def create_ui():
+    # 从环境变量获取默认值（用于自动填充）
+    default_music_u = os.getenv('MUSIC_U', '')
+    default_playlist_id = os.getenv('PLAYLIST_ID', '1959142287')
+    
     with gr.Blocks(title="网易云音乐挂机") as app:
         gr.Markdown("# 🎵 网易云音乐 24 小时挂机")
-        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.3")
+        gr.Markdown("> 支持循环播放、自动切歌、异常重连 | 版本：v1.0.4")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -274,13 +278,14 @@ def create_ui():
                 
                 music_u_input = gr.Textbox(
                     label="MUSIC_U Cookie",
-                    placeholder="请输入您的 MUSIC_U Cookie",
-                    type="password"
+                    placeholder="请输入您的 MUSIC_U Cookie（如已配置环境变量可留空）",
+                    type="password",
+                    value=default_music_u  # 使用环境变量默认值
                 )
                 playlist_id_input = gr.Textbox(
                     label="歌单 ID",
                     placeholder="请输入要播放的歌单 ID",
-                    value="1959142287"  # 默认示例歌单
+                    value=default_playlist_id  # 使用环境变量默认值
                 )
                 
                 with gr.Row():
@@ -303,10 +308,16 @@ def create_ui():
         
         # 事件处理
         def on_start(music_u, playlist_id):
+            # 如果输入为空，使用环境变量默认值
             if not music_u:
-                return "请先输入 MUSIC_U Cookie", get_status(), get_logs()
+                music_u = default_music_u
             if not playlist_id:
-                return "请先输入歌单 ID", get_status(), get_logs()
+                playlist_id = default_playlist_id
+            
+            if not music_u:
+                return "请先输入 MUSIC_U Cookie 或在环境变量中配置", get_status(), get_logs()
+            if not playlist_id:
+                return "请先输入歌单 ID 或在环境变量中配置", get_status(), get_logs()
             
             import threading
             thread = threading.Thread(target=start_playing, args=(music_u, playlist_id))
